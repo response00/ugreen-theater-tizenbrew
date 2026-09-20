@@ -1,232 +1,143 @@
 (() => {
   "use strict";
 
+  const VERSION = "1.0.2";
   const THEATER_MODULE_ID = "com.ugreen.videomgr";
-  const CHECK_EVERY_MS = 700;
-  const MAX_THEATER_ATTEMPTS = 260;
+  const STEP = 42;
 
-  let theaterAttempts = 0;
   let theaterLaunched = false;
+  let attempts = 0;
+  const MAX_ATTEMPTS = 360;
 
-  let loginControls = [];
-  let selectedIndex = 0;
-  let imeMode = false;
-  let highlightedEl = null;
-  let originalOutline = "";
-  let helper = null;
+  // Always-visible proof that the new userscript is actually running.
+  const badge = document.createElement("div");
+  badge.textContent = "UGREEN Theater v" + VERSION + " • ↑↓←→ cursor • OK click";
+  Object.assign(badge.style, {
+    position: "fixed",
+    top: "14px",
+    left: "14px",
+    zIndex: "2147483647",
+    background: "rgba(0,0,0,.82)",
+    color: "#fff",
+    border: "2px solid #44d7ff",
+    borderRadius: "8px",
+    padding: "8px 12px",
+    font: "16px Arial, sans-serif",
+    pointerEvents: "none"
+  });
+  document.documentElement.appendChild(badge);
 
-  const isVisible = (el) => {
-    if (!el) return false;
-    const s = getComputedStyle(el);
-    const r = el.getBoundingClientRect();
-    return s.display !== "none" &&
-           s.visibility !== "hidden" &&
-           Number(s.opacity || 1) > 0 &&
-           r.width > 2 &&
-           r.height > 2;
-  };
+  // Virtual cursor, independent of the site's own focus/navigation.
+  const cursor = document.createElement("div");
+  Object.assign(cursor.style, {
+    position: "fixed",
+    width: "22px",
+    height: "22px",
+    marginLeft: "-11px",
+    marginTop: "-11px",
+    border: "4px solid #ffd400",
+    borderRadius: "50%",
+    boxSizing: "border-box",
+    background: "rgba(255,212,0,.22)",
+    boxShadow: "0 0 8px #000",
+    zIndex: "2147483647",
+    pointerEvents: "none"
+  });
+  document.documentElement.appendChild(cursor);
 
-  const isTextInput = (el) =>
-    !!el && (
-      el.tagName === "TEXTAREA" ||
-      (el.tagName === "INPUT" &&
-       !["button","submit","checkbox","radio","hidden"].includes((el.type || "").toLowerCase()))
-    );
+  let cx = Math.round(window.innerWidth / 2);
+  let cy = Math.round(window.innerHeight / 2);
 
-  function getLoginControls() {
-    const pass = [...document.querySelectorAll('input[type="password"]')].find(isVisible);
-    if (!pass) return [];
-
-    const user = [...document.querySelectorAll(
-      'input:not([type]),input[type="text"],input[type="email"],input[type="tel"]'
-    )].find(el => isVisible(el));
-
-    // Prefer controls in the nearest form/container that contains the password field.
-    let root = pass.closest("form");
-    if (!root) {
-      let p = pass.parentElement;
-      while (p && p !== document.body) {
-        const r = p.getBoundingClientRect();
-        if (r.width >= 220 && r.width <= 800 && r.height >= 180 && r.height <= 850) {
-          const buttons = p.querySelectorAll('button,[role="button"],[tabindex],a');
-          if (buttons.length) { root = p; break; }
-        }
-        p = p.parentElement;
-      }
-    }
-    root = root || document;
-
-    const candidates = [
-      ...(user ? [user] : []),
-      pass,
-      ...root.querySelectorAll(
-        'button,[role="button"],a[href],[tabindex]:not([tabindex="-1"]),input[type="submit"],input[type="button"]'
-      )
-    ].filter(isVisible);
-
-    // Deduplicate while preserving order.
-    return [...new Set(candidates)];
+  function drawCursor() {
+    cx = Math.max(8, Math.min(window.innerWidth - 8, cx));
+    cy = Math.max(8, Math.min(window.innerHeight - 8, cy));
+    cursor.style.left = cx + "px";
+    cursor.style.top = cy + "px";
   }
+  drawCursor();
 
-  function ensureHelper() {
-    if (helper && document.contains(helper)) return;
-    helper = document.createElement("div");
-    helper.id = "ugreen-tizen-remote-helper";
-    helper.textContent = "↑ ↓ ← → избор   •   OK потвърждение";
-    Object.assign(helper.style, {
-      position: "fixed",
-      left: "50%",
-      bottom: "28px",
-      transform: "translateX(-50%)",
-      zIndex: "2147483647",
-      background: "rgba(0,0,0,.78)",
-      color: "#fff",
-      padding: "12px 18px",
-      borderRadius: "10px",
-      fontSize: "18px",
-      fontFamily: "Arial, sans-serif",
-      pointerEvents: "none",
-      boxShadow: "0 2px 12px rgba(0,0,0,.4)"
-    });
-    document.documentElement.appendChild(helper);
-  }
+  function deepestAtPoint(doc, x, y) {
+    let el;
+    try { el = doc.elementFromPoint(x, y); } catch (_) { return null; }
+    if (!el) return null;
 
-  function removeHelper() {
-    if (helper) helper.remove();
-    helper = null;
-  }
-
-  function clearHighlight() {
-    if (highlightedEl) {
-      highlightedEl.style.outline = originalOutline;
-      highlightedEl.style.outlineOffset = "";
-    }
-    highlightedEl = null;
-    originalOutline = "";
-  }
-
-  function highlight(index) {
-    loginControls = getLoginControls();
-    if (!loginControls.length) {
-      clearHighlight();
-      removeHelper();
-      return;
-    }
-
-    selectedIndex = (index + loginControls.length) % loginControls.length;
-    const el = loginControls[selectedIndex];
-
-    clearHighlight();
-    highlightedEl = el;
-    originalOutline = el.style.outline || "";
-    el.style.outline = "4px solid #ffd400";
-    el.style.outlineOffset = "4px";
-    el.scrollIntoView?.({block: "nearest", inline: "nearest"});
-
-    ensureHelper();
-  }
-
-  function refreshLoginNavigation() {
-    const newControls = getLoginControls();
-
-    if (!newControls.length) {
-      loginControls = [];
-      clearHighlight();
-      removeHelper();
-      imeMode = false;
-      return false;
-    }
-
-    const current = loginControls[selectedIndex];
-    loginControls = newControls;
-
-    if (!highlightedEl || !document.contains(highlightedEl)) {
-      const idx = current ? loginControls.indexOf(current) : -1;
-      highlight(idx >= 0 ? idx : 0);
-    }
-
-    return true;
-  }
-
-  function activateSelected() {
-    refreshLoginNavigation();
-    const el = loginControls[selectedIndex];
-    if (!el) return;
-
-    if (isTextInput(el)) {
-      el.focus({preventScroll: true});
-      try { el.click(); } catch (_) {}
-      imeMode = true;
-      return;
-    }
-
-    try {
-      el.focus({preventScroll: true});
-      el.click();
-    } catch (_) {
+    const tag = (el.tagName || "").toUpperCase();
+    if ((tag === "IFRAME" || tag === "FRAME") && el.contentDocument) {
       try {
         const r = el.getBoundingClientRect();
-        el.dispatchEvent(new MouseEvent("click", {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: r.left + r.width / 2,
-          clientY: r.top + r.height / 2
-        }));
+        const inner = deepestAtPoint(el.contentDocument, x - r.left, y - r.top);
+        return inner || el;
       } catch (_) {}
     }
+    return el;
   }
 
-  function onRemoteKey(ev) {
-    if (!getLoginControls().length) return;
+  function clickAtCursor() {
+    const el = deepestAtPoint(document, cx, cy);
+    if (!el) return;
+
+    try { el.focus({preventScroll: true}); } catch (_) {
+      try { el.focus(); } catch (_) {}
+    }
+
+    const opts = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: cx,
+      clientY: cy,
+      button: 0,
+      buttons: 1
+    };
+
+    try {
+      if (typeof PointerEvent !== "undefined") {
+        el.dispatchEvent(new PointerEvent("pointerdown", opts));
+        el.dispatchEvent(new PointerEvent("pointerup", {...opts, buttons: 0}));
+      }
+    } catch (_) {}
+
+    try { el.dispatchEvent(new MouseEvent("mousedown", opts)); } catch (_) {}
+    try { el.dispatchEvent(new MouseEvent("mouseup", {...opts, buttons: 0})); } catch (_) {}
+    try { el.click(); } catch (_) {
+      try { el.dispatchEvent(new MouseEvent("click", {...opts, buttons: 0})); } catch (_) {}
+    }
+
+    // For text/password inputs, try to make the TV IME appear.
+    const tag = (el.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable) {
+      try { el.focus(); } catch (_) {}
+    }
+  }
+
+  function onKey(ev) {
+    if (theaterLaunched) return;
 
     const code = ev.keyCode || ev.which;
+    let handled = true;
 
-    // When Samsung IME is open, let the IME handle ordinary arrows/typing.
-    if (imeMode) {
-      if (code === 65376) { // IME Done
-        imeMode = false;
-        document.activeElement?.blur?.();
-        highlight(selectedIndex + 1);
-        ev.preventDefault();
-        ev.stopPropagation();
-      } else if (code === 65385 || code === 10009) { // IME Cancel / Back
-        imeMode = false;
-        document.activeElement?.blur?.();
-      }
-      return;
+    switch (code) {
+      case 37: cx -= STEP; break; // left
+      case 38: cy -= STEP; break; // up
+      case 39: cx += STEP; break; // right
+      case 40: cy += STEP; break; // down
+      case 13: clickAtCursor(); break; // OK/Enter
+      default: handled = false;
     }
 
-    if ([37, 38].includes(code)) { // Left / Up
+    if (handled) {
       ev.preventDefault();
       ev.stopPropagation();
-      highlight(selectedIndex - 1);
-      return;
-    }
-
-    if ([39, 40].includes(code)) { // Right / Down
-      ev.preventDefault();
-      ev.stopPropagation();
-      highlight(selectedIndex + 1);
-      return;
-    }
-
-    if (code === 13) { // Enter / OK
-      ev.preventDefault();
-      ev.stopPropagation();
-      activateSelected();
+      ev.stopImmediatePropagation?.();
+      drawCursor();
     }
   }
 
-  window.addEventListener("keydown", onRemoteKey, true);
+  window.addEventListener("keydown", onKey, true);
 
   function tryLaunchTheater() {
     if (theaterLaunched) return;
-
-    // If login is visible, wait for the user to log in.
-    if (refreshLoginNavigation()) return;
-
-    theaterAttempts += 1;
+    attempts++;
 
     try {
       const el = document.querySelector(`[moduleId="${THEATER_MODULE_ID}"]`);
@@ -237,30 +148,22 @@
         console.log("[UGREEN Theater] Found:", item.module_id);
         vue.$emit("click", item);
         theaterLaunched = true;
-        console.log("[UGREEN Theater] Launch command sent.");
+        badge.textContent = "UGREEN Theater v" + VERSION + " • launching Theater…";
+        cursor.style.display = "none";
+        setTimeout(() => badge.remove(), 2500);
+        clearInterval(timer);
+        return;
       }
     } catch (err) {
-      console.error("[UGREEN Theater] Launch attempt failed:", err);
+      console.error("[UGREEN Theater] launch attempt:", err);
     }
 
-    if (theaterAttempts >= MAX_THEATER_ATTEMPTS) {
-      console.error("[UGREEN Theater] Timed out waiting for UGOS/Theater.");
-    }
-  }
-
-  const timer = setInterval(() => {
-    if (theaterLaunched || theaterAttempts >= MAX_THEATER_ATTEMPTS) {
+    if (attempts >= MAX_ATTEMPTS) {
       clearInterval(timer);
-      return;
+      badge.textContent = "UGREEN Theater v" + VERSION + " • Theater not found";
     }
-    tryLaunchTheater();
-  }, CHECK_EVERY_MS);
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => {
-      setTimeout(tryLaunchTheater, 300);
-    }, {once: true});
-  } else {
-    setTimeout(tryLaunchTheater, 300);
   }
+
+  const timer = setInterval(tryLaunchTheater, 700);
+  setTimeout(tryLaunchTheater, 250);
 })();

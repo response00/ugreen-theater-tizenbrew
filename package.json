@@ -1,8 +1,8 @@
 {
   "name": "ugreen-theater-tizenbrew",
   "appName": "UGREEN Theater",
-  "version": "1.0.1",
-  "description": "TizenBrew module for UGREEN UGOS Pro Theater with Samsung TV remote navigation on the login screen.",
+  "version": "1.0.2",
+  "description": "UGREEN Theater for TizenBrew with a visible Samsung-remote virtual cursor for the UGOS login screen.",
   "packageType": "mods",
   "websiteURL": "https://192.168.50.136:9443/desktop/?os=ugospro#/",
   "main": "userScript.js",
